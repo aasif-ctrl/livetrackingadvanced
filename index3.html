@@ -1,0 +1,880 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Smart Luggage Tracker</title>
+
+<link rel="stylesheet"
+href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<style>
+body {
+  font-family:Arial;
+  background:#111827;
+  color:white;
+  text-align:center;
+  margin:0;
+}
+
+h2 { color:#38bdf8; }
+
+.card {
+  background:#1f2937;
+  margin:12px;
+  padding:15px;
+  border-radius:12px;
+}
+
+#map {
+  height:400px;
+  margin:12px;
+  border-radius:12px;
+}
+
+button {
+  padding:12px;
+  background:#0284c7;
+  color:white;
+  border:0;
+  border-radius:8px;
+  margin:5px;
+  cursor:pointer;
+}
+
+button:active {
+  background:#0369a1;
+}
+
+#alarm {
+  font-weight:bold;
+  color:#4ade80;
+}
+
+.alert-active {
+  color:#f87171 !important;
+  animation:blink 0.8s infinite;
+}
+
+@keyframes blink {
+  50% { opacity:0.4; }
+}
+
+.status {
+  color:#38bdf8;
+}
+</style>
+</head>
+
+<body>
+
+<h2>SMART LUGGAGE TRACKER</h2>
+
+<div class="card">
+  <h3>Bluetooth Connection</h3>
+  <p id="connection">Disconnected</p>
+  <button onclick="connectBluetooth()">Connect to ESP32</button>
+</div>
+
+<div class="card">
+  <h3>Bag GPS Location</h3>
+  <p id="bag">Waiting for GPS...</p>
+</div>
+
+<div id="map"></div>
+
+<div class="card">
+  <h3>Phone to Bag Distance</h3>
+  <p id="distance">Waiting for phone GPS...</p>
+  <button onclick="getPhoneLocation()">Enable Phone Location</button>
+</div>
+
+<div class="card">
+  <h3>Alarm Status</h3>
+  <p id="alarm">ARMED</p>
+</div>
+
+<div class="card">
+  <h3>Phone Alerts</h3>
+  <p id="alertStatus">Alerts not enabled</p>
+  <button onclick="enableAlerts()">Enable Notifications + Sound</button>
+</div>
+
+<script>
+
+// ---------- BLUETOOTH UUIDs ----------
+
+const SERVICE_UUID =
+"4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+
+const CHARACTERISTIC_UUID =
+"beb5483e-36e1-4688-b7f5-ea07361b26a8";
+
+// ---------- MAP ----------
+
+let map = L.map('map').setView([11,78],5);
+
+L.tileLayer(
+  'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+  {
+    attribution:'OpenStreetMap'
+  }
+).addTo(map);
+
+let bagMarker = null;
+let phoneMarker = null;
+let routeLine = null;
+
+let bagLat = null;
+let bagLon = null;
+let phoneLat = null;
+let phoneLon = null;
+
+// ---------- ROUTE LINE ----------
+
+function updateRoute() {
+
+  if(bagLat !== null && phoneLat !== null) {
+
+    const positions = [
+      [phoneLat,phoneLon],
+      [bagLat,bagLon]
+    ];
+
+    if(routeLine === null) {
+
+      routeLine = L.polyline(positions,{
+        color:'#2563eb',
+        weight:6,
+        opacity:0.9
+      }).addTo(map);
+
+    } else {
+
+      routeLine.setLatLngs(positions);
+    }
+  }
+}
+
+// ---------- DISTANCE ----------
+
+function distanceKm(lat1,lon1,lat2,lon2) {
+
+  const R = 6371;
+
+  const dLat = (lat2-lat1)*Math.PI/180;
+  const dLon = (lon2-lon1)*Math.PI/180;
+
+  const a =
+    Math.sin(dLat/2)**2 +
+    Math.cos(lat1*Math.PI/180) *
+    Math.cos(lat2*Math.PI/180) *
+    Math.sin(dLon/2)**2;
+
+  return R*2*Math.atan2(
+    Math.sqrt(a),
+    Math.sqrt(1-a)
+  );
+}
+
+function updateDistance() {
+
+  if(bagLat !== null && phoneLat !== null) {
+
+    let d = distanceKm(
+      bagLat,bagLon,phoneLat,phoneLon
+    );
+
+    document.getElementById("distance").innerHTML =
+      d < 1 ?
+      (d*1000).toFixed(1)+" meters" :
+      d.toFixed(3)+" km";
+
+    updateRoute();
+  }
+}
+
+// ---------- PHONE GPS ----------
+
+function getPhoneLocation() {
+
+  if(!navigator.geolocation) {
+    alert("GPS not supported");
+    return;
+  }
+
+  navigator.geolocation.watchPosition(
+
+    function(position) {
+
+      phoneLat = position.coords.latitude;
+      phoneLon = position.coords.longitude;
+
+      if(phoneMarker === null) {
+
+        phoneMarker = L.marker(
+          [phoneLat,phoneLon]
+        ).addTo(map).bindPopup("Your Phone");
+
+      } else {
+
+        phoneMarker.setLatLng([phoneLat,phoneLon]);
+      }
+
+      updateDistance();
+    },
+
+    function(error) {
+      alert("Phone location permission required");
+    },
+
+    {
+      enableHighAccuracy:true
+    }
+  );
+}
+
+// ---------- BAG GPS ----------
+
+function updateBag(data) {
+
+  if(data.valid) {
+
+    bagLat = data.lat;
+    bagLon = data.lon;
+
+    document.getElementById("bag").innerHTML =
+      "Latitude: "+bagLat.toFixed(6)+
+      "<br>Longitude: "+bagLon.toFixed(6);
+
+    if(bagMarker === null) {
+
+      bagMarker = L.marker(
+        [bagLat,bagLon]
+      ).addTo(map).bindPopup("Your Bag");
+
+    } else {
+
+      bagMarker.setLatLng([bagLat,bagLon]);
+    }
+
+    map.setView([bagLat,bagLon],16);
+
+    updateDistance();
+
+  } else {
+
+    document.getElementById("bag").innerHTML =
+      "GPS signal not available";
+  }
+
+  // ---------- ALARM STATUS ----------
+
+  if(data.alarm) {
+
+    document.getElementById("alarm").innerHTML =
+      "🚨 VIBRATION DETECTED!";
+
+    document.getElementById("alarm").className =
+      "alert-active";
+
+    triggerAlert();
+
+  } else {
+
+    document.getElementById("alarm").innerHTML =
+      "ARMED";
+
+    document.getElementById("alarm").className = "";
+
+    alarmTriggered = false;
+  }
+}
+
+// ---------- PHONE ALERT SYSTEM ----------
+
+let alarmTriggered = false;
+let alertsEnabled = false;
+let audioContext = null;
+
+async function enableAlerts() {
+
+  try {
+
+    // Enable browser notification permission
+
+    if("Notification" in window) {
+
+      const permission =
+        await Notification.requestPermission();
+
+      if(permission !== "granted") {
+
+        document.getElementById("alertStatus").innerHTML =
+          "Notification permission denied";
+
+      } else {
+
+        document.getElementById("alertStatus").innerHTML =
+          "Notifications enabled";
+      }
+
+    } else {
+
+      document.getElementById("alertStatus").innerHTML =
+        "Notifications unsupported";
+    }
+
+    // Unlock audio after user interaction
+
+    const AudioContextClass =
+      window.AudioContext || window.webkitAudioContext;
+
+    if(AudioContextClass) {
+
+      audioContext = new AudioContextClass();
+
+      await audioContext.resume();
+    }
+
+    alertsEnabled = true;
+
+    document.getElementById("alertStatus").innerHTML =
+      "🔔 Alerts + Sound Enabled";
+
+    alert("Phone alerts enabled successfully!");
+
+  } catch(error) {
+
+    alert("Unable to enable alerts: "+error.message);
+  }
+}
+
+// ---------- ALERT SOUND ----------
+
+function playAlarmSound() {
+
+  if(!alertsEnabled || !audioContext) return;
+
+  if(audioContext.state !== "running") return;
+
+  const oscillator = audioContext.createOscillator();
+  const gain = audioContext.createGain();
+
+  oscillator.type = "sine";
+  oscillator.frequency.value = 1000;
+
+  gain.gain.setValueAtTime(
+    0.25,audioContext.currentTime
+  );
+
+  gain.gain.exponentialRampToValueAtTime(
+    0.001,audioContext.currentTime+0.7
+  );
+
+  oscillator.connect(gain);
+  gain.connect(audioContext.destination);
+
+  oscillator.start();
+  oscillator.stop(audioContext.currentTime+0.7);
+}
+
+// ---------- NOTIFICATION ----------
+
+function triggerAlert() {
+
+  // Only one alert per alarm event
+
+  if(alarmTriggered) return;
+
+  alarmTriggered = true;
+
+  if(!alertsEnabled) return;
+
+  playAlarmSound();
+
+  if("Notification" in window &&
+     Notification.permission === "granted") {
+
+    const notification = new Notification(
+      "🚨 SMART BAG ALERT",
+      {
+        body:"Vibration detected! Check your luggage immediately.",
+        tag:"smart-bag-alert",
+        requireInteraction:true
+      }
+    );
+
+    notification.onclick = function() {
+
+      window.focus();
+      notification.close();
+    };
+  }
+}
+
+// ---------- BLUETOOTH DATA ----------
+
+function handleBLEData(event) {
+
+  try {
+
+    const value = event.target.value;
+
+    const text = new TextDecoder().decode(value);
+
+    const data = JSON.parse(text);
+
+    updateBag(data);
+
+  } catch(error) {
+
+    console.log("Data error:",error);
+  }
+}
+
+// ---------- CONNECT ESP32 ----------
+
+async function connectBluetooth() {
+
+  try {
+
+    document.getElementById("connection").innerHTML =
+      "Searching for ESP32...";
+
+    const device = await navigator.bluetooth.requestDevice({
+
+      filters: [
+        {name:"SMART_BAG_BLE"}
+      ],
+
+      optionalServices:[SERVICE_UUID]
+
+    });
+
+    device.addEventListener(
+      "gattserverdisconnected",
+      function() {
+
+        document.getElementById("connection").innerHTML =
+          "Bluetooth Disconnected";
+      }
+    );
+
+    const server = await device.gatt.connect();
+
+    const service =
+      await server.getPrimaryService(SERVICE_UUID);
+
+    const characteristic =
+      await service.getCharacteristic(CHARACTERISTIC_UUID);
+
+    await characteristic.startNotifications();
+
+    characteristic.addEventListener(
+      "characteristicvaluechanged",
+      handleBLEData
+    );
+
+    document.getElementById("connection").innerHTML =
+      "CONNECTED TO SMART BAG";
+
+    const initialValue =
+      await characteristic.readValue();
+
+    handleBLEData({
+      target:{value:initialValue}
+    });
+
+  } catch(error) {
+
+    document.getElementById("connection").innerHTML =
+      "Connection failed";
+
+    alert(error.message);
+
+    console.log(error);
+  }
+}
+
+</script>
+
+</body>
+</html>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<title>Smart Luggage Tracker</title>
+
+<!-- LEAFLET MAP -->
+<link rel="stylesheet"
+href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<!-- FIREBASE -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+
+<style>
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: Arial, sans-serif;
+  background: #111827;
+  color: white;
+  text-align: center;
+  margin: 0;
+}
+
+h2 {
+  color: #38bdf8;
+  padding: 20px 10px;
+}
+
+.card {
+  background: #1f2937;
+  margin: 12px;
+  padding: 18px;
+  border-radius: 12px;
+}
+
+#map {
+  height: 400px;
+  margin: 12px;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.status {
+  font-size: 18px;
+  font-weight: bold;
+}
+
+#connection {
+  color: #facc15;
+}
+
+#alarm {
+  color: #4ade80;
+}
+
+#coordinates {
+  line-height: 1.8;
+  font-size: 16px;
+}
+
+button {
+  padding: 12px 20px;
+  background: #0284c7;
+  color: white;
+  border: 0;
+  border-radius: 8px;
+  margin: 5px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #0369a1;
+}
+
+a {
+  color: #38bdf8;
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+.footer {
+  color: #9ca3af;
+  padding: 20px;
+  font-size: 13px;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<h2>SMART LUGGAGE TRACKER</h2>
+
+<!-- CONNECTION -->
+<div class="card">
+
+  <h3>System Connection</h3>
+
+  <p id="connection" class="status">
+    Connecting to Firebase...
+  </p>
+
+</div>
+
+<!-- BAG LOCATION -->
+<div class="card">
+
+  <h3>Bag GPS Location</h3>
+
+  <p id="coordinates">
+    Waiting for GPS...
+  </p>
+
+  <p>
+    <a id="mapsLink"
+       href="#"
+       target="_blank"
+       style="display:none;">
+       Open Location in Google Maps
+    </a>
+  </p>
+
+</div>
+
+<!-- MAP -->
+<div id="map"></div>
+
+<!-- ALARM -->
+<div class="card">
+
+  <h3>Security Status</h3>
+
+  <p id="alarm" class="status">
+    ARMED
+  </p>
+
+</div>
+
+<!-- UPDATE TIME -->
+<div class="card">
+
+  <h3>Last GPS Update</h3>
+
+  <p id="lastUpdate">
+    Waiting for data...
+  </p>
+
+</div>
+
+<div class="footer">
+  SMART LUGGAGE TRACKER | ESP32 + GPS + Firebase
+</div>
+
+<script>
+
+// ==========================================
+// FIREBASE CONFIGURATION
+// ==========================================
+
+// REPLACE THESE VALUES WITH YOUR FIREBASE CONFIG
+
+const firebaseConfig = {
+
+  apiKey: "YOUR_API_KEY",
+
+  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+
+  databaseURL: "YOUR_DATABASE_URL",
+
+  projectId: "YOUR_PROJECT_ID",
+
+  storageBucket: "YOUR_PROJECT_ID.appspot.com",
+
+  messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+
+  appId: "YOUR_APP_ID"
+
+};
+
+// ==========================================
+// INITIALIZE FIREBASE
+// ==========================================
+
+firebase.initializeApp(firebaseConfig);
+
+const database = firebase.database();
+
+const bagRef = database.ref("bag/latest");
+
+// ==========================================
+// INITIALIZE OPENSTREETMAP
+// ==========================================
+
+let map = L.map("map").setView([11,78],5);
+
+L.tileLayer(
+  "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+  {
+    attribution: "&copy; OpenStreetMap contributors"
+  }
+).addTo(map);
+
+// ==========================================
+// BAG MARKER
+// ==========================================
+
+let bagMarker = null;
+
+// ==========================================
+// UPDATE BAG LOCATION
+// ==========================================
+
+function updateBagMap(lat,lon) {
+
+  if(bagMarker === null) {
+
+    bagMarker = L.marker([lat,lon])
+      .addTo(map)
+      .bindPopup("SMART BAG LOCATION");
+
+  } else {
+
+    bagMarker.setLatLng([lat,lon]);
+
+  }
+
+  map.setView([lat,lon],16);
+
+}
+
+// ==========================================
+// FIREBASE LIVE GPS LISTENER
+// ==========================================
+
+bagRef.on("value",
+
+  function(snapshot) {
+
+    const data = snapshot.val();
+
+    if(!data) {
+
+      document.getElementById("connection").innerHTML =
+        "Firebase Connected - Waiting for GPS";
+
+      document.getElementById("coordinates").innerHTML =
+        "Waiting for bag GPS data...";
+
+      return;
+
+    }
+
+    // GPS VALIDATION
+
+    const lat = Number(data.lat);
+    const lon = Number(data.lon);
+
+    if(
+      !Number.isFinite(lat) ||
+      !Number.isFinite(lon) ||
+      lat < -90 || lat > 90 ||
+      lon < -180 || lon > 180
+    ) {
+
+      document.getElementById("coordinates").innerHTML =
+        "Invalid GPS coordinates";
+
+      return;
+
+    }
+
+    // CONNECTION STATUS
+
+    document.getElementById("connection").innerHTML =
+      "LIVE GPS CONNECTED";
+
+    document.getElementById("connection").style.color =
+      "#4ade80";
+
+    // DISPLAY COORDINATES
+
+    document.getElementById("coordinates").innerHTML =
+
+      "Latitude: " + lat.toFixed(6) +
+
+      "<br>Longitude: " + lon.toFixed(6);
+
+    // UPDATE MAP
+
+    updateBagMap(lat,lon);
+
+    // GOOGLE MAPS LINK
+
+    const mapsLink = document.getElementById("mapsLink");
+
+    mapsLink.href =
+      "https://www.google.com/maps?q=" + lat + "," + lon;
+
+    mapsLink.style.display = "inline";
+
+    // ALARM STATUS
+
+    const alarmElement = document.getElementById("alarm");
+
+    if(data.alarm === true) {
+
+      alarmElement.innerHTML =
+        "⚠ VIBRATION ALARM ACTIVE";
+
+      alarmElement.style.color =
+        "#f87171";
+
+    } else {
+
+      alarmElement.innerHTML =
+        "✓ ARMED";
+
+      alarmElement.style.color =
+        "#4ade80";
+
+    }
+
+    // LAST UPDATE TIME
+
+    if(data.timestamp) {
+
+      document.getElementById("lastUpdate").innerHTML =
+        new Date(data.timestamp).toLocaleString();
+
+    } else {
+
+      document.getElementById("lastUpdate").innerHTML =
+        "GPS Received";
+
+    }
+
+  },
+
+  function(error) {
+
+    document.getElementById("connection").innerHTML =
+      "Firebase Connection Failed";
+
+    document.getElementById("connection").style.color =
+      "#f87171";
+
+    console.error(error);
+
+  }
+
+);
+
+// ==========================================
+// END
+// ==========================================
+
+</script>
+
+</body>
+</html>
